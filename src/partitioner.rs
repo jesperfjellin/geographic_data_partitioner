@@ -437,14 +437,37 @@ pub fn clip_polygon(polygon: &Polygon<f64>, partition: &Partition) -> Option<Pol
             return None;
         }
 
-        // If polygon is completely inside partition, return as-is
+        // Check for complete containment cases
+        let partition_corners: Vec<Point<f64>> = partition.boundary.exterior()
+            .points()
+            .take(4)
+            .collect();
+        
+        let all_corners_inside = partition_corners.iter()
+            .all(|point| polygon.contains(point));
+
+        if all_corners_inside {
+            return Some(partition.boundary.clone());
+        }
+
         if partition.boundary.contains(polygon) {
             return Some(polygon.clone());
         }
 
         let exterior_points: Vec<_> = polygon.exterior().points().collect();
         let mut new_exterior_points = Vec::new();
-        let mut last_intersection: Option<Point<f64>> = None;
+        
+        // Define add_point helper function at the function level
+        let add_point = |points: &mut Vec<Point<f64>>, point: Point<f64>| {
+            const EPSILON: f64 = 1e-10;
+            if points.is_empty() || 
+               points.last().map(|last| {
+                   (last.x() - point.x()).abs() > EPSILON || 
+                   (last.y() - point.y()).abs() > EPSILON
+               }).unwrap_or(true) {
+                points.push(point);
+            }
+        };
         
         // Process each edge of the polygon
         for i in 0..exterior_points.len() - 1 {
@@ -456,78 +479,90 @@ pub fn clip_polygon(polygon: &Polygon<f64>, partition: &Partition) -> Option<Pol
 
             match (p1_inside, p2_inside) {
                 (true, true) => {
-                    if new_exterior_points.is_empty() && last_intersection.is_none() {
-                        new_exterior_points.push(p1);
-                    }
-                    new_exterior_points.push(p2);
-                    last_intersection = None;
+                    add_point(&mut new_exterior_points, p1);
+                    add_point(&mut new_exterior_points, p2);
                 },
                 (true, false) | (false, true) => {
-                    if let Some(intersection) = find_edge_intersection(
+                    let intersections = find_all_edge_intersections(
                         (p1.x(), p1.y()),
                         (p2.x(), p2.y()),
                         &partition.boundary
-                    ) {
-                        let int_point = Point::new(intersection.0, intersection.1);
-                        
-                        if p1_inside {
-                            if new_exterior_points.is_empty() && last_intersection.is_none() {
-                                new_exterior_points.push(p1);
-                            }
-                            new_exterior_points.push(int_point.clone());
-                            last_intersection = Some(int_point);
-                        } else if p2_inside {
-                            if new_exterior_points.is_empty() {
-                                if let Some(last) = last_intersection {
-                                    new_exterior_points.push(last);
-                                }
-                            }
-                            new_exterior_points.push(int_point);
-                            new_exterior_points.push(p2);
-                            last_intersection = None;
+                    );
+
+                    // Sort intersections by distance from p1
+                    let mut sorted_intersections: Vec<_> = intersections.into_iter()
+                        .map(|(x, y)| {
+                            let dx = x - p1.x();
+                            let dy = y - p1.y();
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            (dist, Point::new(x, y))
+                        })
+                        .collect();
+                    sorted_intersections.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                    if p1_inside {
+                        add_point(&mut new_exterior_points, p1);
+                        if let Some((_, int_point)) = sorted_intersections.first() {
+                            add_point(&mut new_exterior_points, int_point.clone());
+                        }
+                    } else {
+                        if let Some((_, int_point)) = sorted_intersections.last() {
+                            add_point(&mut new_exterior_points, int_point.clone());
+                            add_point(&mut new_exterior_points, p2);
                         }
                     }
                 },
                 (false, false) => {
-                    // Check if the edge crosses the partition twice
-                    let intersections: Vec<_> = find_all_edge_intersections(
+                    let intersections = find_all_edge_intersections(
                         (p1.x(), p1.y()),
                         (p2.x(), p2.y()),
                         &partition.boundary
                     );
                     
                     if intersections.len() >= 2 {
-                        if new_exterior_points.is_empty() && last_intersection.is_none() {
-                            new_exterior_points.push(Point::new(intersections[0].0, intersections[0].1));
+                        // Sort intersections by distance from p1
+                        let mut sorted_intersections: Vec<_> = intersections.into_iter()
+                            .map(|(x, y)| {
+                                let dx = x - p1.x();
+                                let dy = y - p1.y();
+                                let dist = (dx * dx + dy * dy).sqrt();
+                                (dist, Point::new(x, y))
+                            })
+                            .collect();
+                        sorted_intersections.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+                        // Add only the entry and exit points
+                        if let Some((_, entry)) = sorted_intersections.first() {
+                            add_point(&mut new_exterior_points, entry.clone());
                         }
-                        new_exterior_points.push(Point::new(intersections[1].0, intersections[1].1));
+                        if let Some((_, exit)) = sorted_intersections.last() {
+                            add_point(&mut new_exterior_points, exit.clone());
+                        }
                     }
                 }
             }
         }
 
         // Close the polygon if needed
-        if !new_exterior_points.is_empty() {
+        if new_exterior_points.len() >= 3 {
             if new_exterior_points[0] != new_exterior_points[new_exterior_points.len() - 1] {
-                new_exterior_points.push(new_exterior_points[0].clone());
+                // Clone the first point before using it
+                let first_point = new_exterior_points[0].clone();
+                add_point(&mut new_exterior_points, first_point);
             }
 
-            // Create new polygon if we have enough points
-            if new_exterior_points.len() >= 3 { // Reduced minimum point requirement
-                let new_exterior = LineString::new(
-                    new_exterior_points.into_iter()
-                        .map(|p| (p.x(), p.y()).into())
-                        .collect()
-                );
+            let new_exterior = LineString::new(
+                new_exterior_points.into_iter()
+                    .map(|p| (p.x(), p.y()).into())
+                    .collect()
+            );
 
-                // Handle holes similarly
-                let new_holes: Vec<LineString<f64>> = polygon.interiors()
-                    .into_iter()
-                    .filter_map(|hole| clip_ring(hole, partition))
-                    .collect();
+            let new_holes: Vec<LineString<f64>> = polygon.interiors()
+                .iter()
+                .filter_map(|hole| clip_ring(hole, partition))
+                .collect();
 
-                return Some(Polygon::new(new_exterior, new_holes));
-            }
+            return Some(Polygon::new(new_exterior, new_holes));
         }
     }
     None
@@ -583,6 +618,98 @@ fn find_all_edge_intersections(
     intersections
 }
 
+
+pub fn process_distinct_files(files: Vec<PathBuf>, num_partitions: Option<usize>) -> Result<(), Box<dyn Error>> {
+    println!("\n=== Starting Distinct GIS Processing ===");
+    
+    if let Some(crs) = validate_crs(&files)? {
+        println!("Detected Coordinate Reference System: {}", crs.srid);
+    } else {
+        println!("Warning: Could not detect CRS information. Assuming WGS84 (EPSG:4326)");
+    }
+    
+    // Create output directory
+    let output_dir = Path::new("output");
+    create_dir_all(output_dir)?;
+    println!("Created output directory: {}", output_dir.display());
+
+    // Calculate common extent from all files
+    println!("\nCalculating common extent...");
+    let common_extent = calculate_common_extent(&files)?;
+    let partitions_count = num_partitions.unwrap_or_else(|| suggest_partitions(&files));
+    let partitions = create_partitions(&common_extent, partitions_count);
+
+    // Process each file separately but use the same partitions
+    for (file_index, file) in files.iter().enumerate() {
+        println!("\nProcessing file {}/{}: {}", file_index + 1, files.len(), file.display());
+        let geometries = load_geometries(file)?;
+        
+        // Create partition outputs for this file
+        let mut partition_outputs: Vec<PartitionOutput> = partitions.iter().enumerate()
+            .map(|(id, _)| PartitionOutput { id, geometries: Vec::new() })
+            .collect();
+
+        println!("Processing geometries across {} partitions", partitions.len());
+        let total_geometries = geometries.len();
+        let mut processed_count = 0;
+        let progress_interval = (total_geometries / 20).max(1);
+
+        // Process geometries for this file
+        for geometry in geometries {
+            processed_count += 1;
+            if processed_count % progress_interval == 0 {
+                println!("Progress: {:.1}% ({}/{})", 
+                    (processed_count as f64 / total_geometries as f64) * 100.0,
+                    processed_count,
+                    total_geometries
+                );
+            }
+
+            for (partition_idx, partition) in partitions.iter().enumerate() {
+                match &geometry {
+                    Geometry::LineString(ref line) => {
+                        if let Some(clipped_line) = clip_linestring(line, partition) {
+                            partition_outputs[partition_idx].geometries.push(
+                                Geometry::LineString(clipped_line)
+                            );
+                        }
+                    },
+                    Geometry::Polygon(ref polygon) => {
+                        if let Some(clipped_polygon) = clip_polygon(polygon, partition) {
+                            partition_outputs[partition_idx].geometries.push(
+                                Geometry::Polygon(clipped_polygon)
+                            );
+                        }
+                    },
+                    _ => {}
+                }
+            }
+        }
+
+        // Write partitions for this file
+        println!("\nWriting partitioned data for file {}...", file.display());
+        let file_stem = file.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+
+        for partition_output in &partition_outputs {
+            if !partition_output.geometries.is_empty() {
+                let output_path = output_dir.join(
+                    format!("{}_partition_{}.geojson", file_stem, partition_output.id)
+                );
+                write_partition_to_file(partition_output, &output_path)?;
+                println!("Written partition {} with {} geometries", 
+                    partition_output.id,
+                    partition_output.geometries.len()
+                );
+            }
+        }
+    }
+
+    println!("\n=== Processing Complete ===");
+    println!("Output files can be found in: {}", output_dir.display());
+    Ok(())
+}
 
 fn clip_ring(ring: &LineString<f64>, partition: &Partition) -> Option<LineString<f64>> {
     if let (Some(ring_bbox), Some(partition_bbox)) = (ring.bounding_rect(), partition.boundary.bounding_rect()) {
@@ -694,18 +821,10 @@ fn line_intersection(
 }
 
 
-// Add this function to write a partition to a GeoJSON file
 fn write_partition_to_file(
     partition: &PartitionOutput,
-    output_dir: &Path,
-    original_file: &Path,
+    output_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let file_stem = original_file.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    
-    let output_path = output_dir.join(format!("{}_partition_{}.geojson", file_stem, partition.id));
-    
     let features: Vec<Feature> = partition.geometries.iter().map(|geom| {
         let geojson_geom = match geom {
             Geometry::LineString(line) => {
@@ -719,14 +838,14 @@ fn write_partition_to_file(
                     .points()
                     .map(|p| vec![p.x(), p.y()])
                     .collect();
-                    let holes: Vec<Vec<Vec<f64>>> = polygon.interiors()
-                        .into_iter()  // Add this
-                        .map(|ring| {
-                            ring.points()
-                                .map(|p| vec![p.x(), p.y()])
-                                .collect()
-                        })
-                        .collect();
+                let holes: Vec<Vec<Vec<f64>>> = polygon.interiors()
+                    .iter()
+                    .map(|ring| {
+                        ring.points()
+                            .map(|p| vec![p.x(), p.y()])
+                            .collect()
+                    })
+                    .collect();
                 let mut rings = vec![exterior];
                 rings.extend(holes);
                 GeoJsonGeometry::new(geojson::Value::Polygon(rings))
@@ -769,8 +888,19 @@ pub fn process_gis_files(files: Vec<PathBuf>, num_partitions: Option<usize>) -> 
     create_dir_all(output_dir)?;
     println!("Created output directory: {}", output_dir.display());
 
-    // Calculate common extent and create partitions as before
-    let common_extent = calculate_common_extent(&files)?;
+    // Load all geometries from all files first
+    println!("\nLoading geometries from all input files...");
+    let mut all_geometries = Vec::new();
+    for file in &files {
+        println!("Loading file: {}", file.display());
+        let geometries = load_geometries(file)?;
+        println!("Loaded {} geometries from {}", geometries.len(), file.display());
+        all_geometries.extend(geometries);
+    }
+    println!("Total geometries loaded: {}", all_geometries.len());
+
+    // Calculate common extent from combined geometries
+    let common_extent = calculate_extent_from_geometries(&all_geometries)?;
     let partitions_count = num_partitions.unwrap_or_else(|| suggest_partitions(&files));
     let partitions = create_partitions(&common_extent, partitions_count);
 
@@ -779,63 +909,84 @@ pub fn process_gis_files(files: Vec<PathBuf>, num_partitions: Option<usize>) -> 
         .map(|(id, _)| PartitionOutput { id, geometries: Vec::new() })
         .collect();
 
-    // Process each file
-    for (file_index, file) in files.iter().enumerate() {
-        println!("\nProcessing file {}/{}: {}", file_index + 1, files.len(), file.display());
-        let geometries = load_geometries(file)?;
-        
-        println!("Processing geometries across {} partitions", partitions.len());
-        let total_geometries = geometries.len();
-        let mut processed_count = 0;
-        let progress_interval = (total_geometries / 20).max(1);
+    // Process all geometries
+    println!("\nProcessing geometries across {} partitions", partitions.len());
+    let total_geometries = all_geometries.len();
+    let mut processed_count = 0;
+    let progress_interval = (total_geometries / 20).max(1);
 
-        for geometry in geometries {
-            processed_count += 1;
-            if processed_count % progress_interval == 0 {
-                println!("Progress: {:.1}% ({}/{})", 
-                    (processed_count as f64 / total_geometries as f64) * 100.0,
-                    processed_count,
-                    total_geometries
-                );
-            }
-
-            for (partition_idx, partition) in partitions.iter().enumerate() {
-                match &geometry {
-                    Geometry::LineString(ref line) => {
-                        if let Some(clipped_line) = clip_linestring(line, partition) {
-                            partition_outputs[partition_idx].geometries.push(
-                                Geometry::LineString(clipped_line)
-                            );
-                        }
-                    },
-                    Geometry::Polygon(ref polygon) => {
-                        if let Some(clipped_polygon) = clip_polygon(polygon, partition) {
-                            partition_outputs[partition_idx].geometries.push(
-                                Geometry::Polygon(clipped_polygon)
-                            );
-                        }
-                    },
-                    _ => {}
-                }
-            }
+    for geometry in all_geometries {
+        processed_count += 1;
+        if processed_count % progress_interval == 0 {
+            println!("Progress: {:.1}% ({}/{})", 
+                (processed_count as f64 / total_geometries as f64) * 100.0,
+                processed_count,
+                total_geometries
+            );
         }
 
-        // Write partitions to files
-        println!("\nWriting partitioned data to files...");
-        for partition_output in &partition_outputs {
-            if !partition_output.geometries.is_empty() {
-                write_partition_to_file(partition_output, output_dir, file)?;
-                println!("Written partition {} with {} geometries", 
-                    partition_output.id,
-                    partition_output.geometries.len()
-                );
+        for (partition_idx, partition) in partitions.iter().enumerate() {
+            match &geometry {
+                Geometry::LineString(ref line) => {
+                    if let Some(clipped_line) = clip_linestring(line, partition) {
+                        partition_outputs[partition_idx].geometries.push(
+                            Geometry::LineString(clipped_line)
+                        );
+                    }
+                },
+                Geometry::Polygon(ref polygon) => {
+                    if let Some(clipped_polygon) = clip_polygon(polygon, partition) {
+                        partition_outputs[partition_idx].geometries.push(
+                            Geometry::Polygon(clipped_polygon)
+                        );
+                    }
+                },
+                _ => {}
             }
         }
-        
-        println!("Completed processing file: {}", file.display());
+    }
+
+    // Write one file per partition containing geometries from all input files
+    println!("\nWriting partitioned data to files...");
+    for partition_output in &partition_outputs {
+        if !partition_output.geometries.is_empty() {
+            let output_path = output_dir.join(format!("partition_{}.geojson", partition_output.id));
+            write_partition_to_file(partition_output, &output_path)?;
+            println!("Written partition {} with {} geometries", 
+                partition_output.id,
+                partition_output.geometries.len()
+            );
+        }
     }
 
     println!("\n=== Processing Complete ===");
     println!("Output files can be found in: {}", output_dir.display());
     Ok(())
+}
+
+// New helper function to calculate extent from geometries
+fn calculate_extent_from_geometries(geometries: &[Geometry<f64>]) -> Result<Polygon<f64>, Box<dyn Error>> {
+    let mut min_x = f64::MAX;
+    let mut min_y = f64::MAX;
+    let mut max_x = f64::MIN;
+    let mut max_y = f64::MIN;
+
+    for geometry in geometries {
+        if let Some(bbox) = geometry.bounding_rect() {
+            min_x = min_x.min(bbox.min().x);
+            min_y = min_y.min(bbox.min().y);
+            max_x = max_x.max(bbox.max().x);
+            max_y = max_y.max(bbox.max().y);
+        }
+    }
+
+    let exterior = LineString::new(vec![
+        (min_x, min_y).into(),
+        (max_x, min_y).into(),
+        (max_x, max_y).into(),
+        (min_x, max_y).into(),
+        (min_x, min_y).into(),
+    ]);
+
+    Ok(Polygon::new(exterior, vec![]))
 }

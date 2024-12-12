@@ -22,6 +22,12 @@ fn main() {
                 .num_args(1)
                 .help("Number of partitions (optional, will be calculated if not provided)"),
         )
+        .arg(
+            Arg::new("distinct")
+                .long("distinct")
+                .action(clap::ArgAction::SetTrue)  // Add this line
+                .help("Process files separately but with the same partition lines"),
+        )
         .get_matches();
 
     // Get input files
@@ -36,6 +42,9 @@ fn main() {
         .get_one::<String>("partitions")
         .map(|p| p.parse::<usize>().expect("Invalid number of partitions"));
 
+    // Check if distinct flag is set
+    let distinct = matches.contains_id("distinct");
+
     // Validate that input files exist
     for file in &files {
         if !file.exists() {
@@ -45,7 +54,13 @@ fn main() {
     }
 
     // Process the files
-    match partitioner::process_gis_files(files, num_partitions) {
+    let result = if distinct {
+        partitioner::process_distinct_files(files, num_partitions)
+    } else {
+        partitioner::process_gis_files(files, num_partitions)
+    };
+
+    match result {
         Ok(_) => println!("Processing completed successfully"),
         Err(e) => {
             eprintln!("Error processing files: {}", e);
