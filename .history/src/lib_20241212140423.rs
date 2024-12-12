@@ -1,8 +1,6 @@
-use std::path::Path;
-use std::error::Error;
-use geo::Geometry;
-
 pub mod partitioner;
+
+pub use partitioner::*;
 
 pub enum InputFormat {
     GeoJSON,
@@ -12,15 +10,18 @@ pub enum InputFormat {
 pub fn process_file(
     path: &Path, 
     format: InputFormat,
-    _target_crs: Option<&str>
+    target_crs: Option<&str>
 ) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
     match format {
         InputFormat::GeoJSON => {
-            partitioner::load_geometries(&path.to_path_buf())
+            load_geometries(&path.to_path_buf())
         },
         InputFormat::GML => {
-            let mut reader = partitioner::GmlReader::new();
-            reader.read_geometries(path)
+            let mut reader = GmlReader::new(path)?;
+            if let Some(crs) = target_crs {
+                reader.set_target_crs(crs);
+            }
+            reader.read_geometries()
         }
     }
 }

@@ -2,6 +2,8 @@ use clap::{Command, Arg};
 use std::path::PathBuf;
 mod partitioner;
 
+
+
 fn main() {
     let matches = Command::new("GIS Partitioner")
         .version("1.0")
@@ -49,9 +51,6 @@ fn main() {
         Ok(_) => println!("Processing completed successfully"),
         Err(e) => {
             eprintln!("Error processing files: {}", e);
-            if e.to_string().contains("CRS mismatch") {
-                eprintln!("Please ensure all input files use the same coordinate reference system.");
-            }
             std::process::exit(1);
         }
     }

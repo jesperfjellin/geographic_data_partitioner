@@ -12,7 +12,7 @@ pub enum InputFormat {
 pub fn process_file(
     path: &Path, 
     format: InputFormat,
-    _target_crs: Option<&str>
+    _target_crs: Option<&str>  // Added underscore here
 ) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
     match format {
         InputFormat::GeoJSON => {

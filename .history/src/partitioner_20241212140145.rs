@@ -10,14 +10,6 @@ use std::fs::create_dir_all;
 use std::error::Error;
 use std::path::Path;
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry as GeoJsonGeometry};
-use quick_xml::Reader;
-use quick_xml::events::Event;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct CoordinateSystem {
-    pub srid: String,
-    pub source: String, // file name where this CRS was found
-}
 
 pub struct Partition {
     pub boundary: Polygon<f64>,
@@ -29,200 +21,9 @@ struct PartitionOutput {
     geometries: Vec<Geometry<f64>>,
 }
 
-
-// Add this struct alongside your existing ones
-pub struct GmlReader {
-    // Remove proj-related fields
-}
-
-// Add these implementations after your existing code
-impl GmlReader {
-    pub fn new() -> Self {
-        GmlReader {}
-    }
-
-    pub fn read_geometries(&mut self, path: &Path) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let buf_reader = BufReader::new(file);
-        let mut reader = Reader::from_reader(buf_reader);
-        reader.trim_text(true);
-
-        let mut geometries = Vec::new();
-        let mut buf = Vec::new();
-        let mut coords_text = String::new();
-        let mut in_coordinates = false;
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"gml:coordinates" | b"coordinates" => {
-                            in_coordinates = true;
-                            coords_text.clear();
-                        },
-                        _ => ()
-                    }
-                },
-                Ok(Event::Text(e)) if in_coordinates => {
-                    coords_text.push_str(&e.unescape().unwrap_or_default());
-                },
-                Ok(Event::End(ref e)) => {
-                    match e.name().as_ref() {
-                        b"gml:coordinates" | b"coordinates" => {
-                            in_coordinates = false;
-                            if let Some(geom) = self.parse_coordinates(&coords_text)? {
-                                geometries.push(geom);
-                            }
-                        },
-                        _ => ()
-                    }
-                },
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(Box::new(e)),
-                _ => ()
-            }
-            buf.clear();
-        }
-
-        Ok(geometries)
-    }
-
-    fn parse_coordinates(&self, coords_text: &str) -> Result<Option<Geometry<f64>>, Box<dyn Error>> {
-        let mut points = Vec::new();
-        
-        for coord_pair in coords_text.split_whitespace() {
-            let coords: Vec<&str> = coord_pair.split(',').collect();
-            if coords.len() >= 2 {
-                let x = coords[0].parse::<f64>()?;
-                let y = coords[1].parse::<f64>()?;
-                points.push((x, y).into()); // Add .into() here
-            }
-        }
-    
-        if points.len() >= 2 {
-            if points.first() == points.last() {
-                Ok(Some(Geometry::Polygon(Polygon::new(
-                    LineString::new(points),
-                    vec![]
-                ))))
-            } else {
-                Ok(Some(Geometry::LineString(LineString::new(points))))
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    // Add the new CRS detection method
-    pub fn detect_crs(&self, path: &Path) -> Result<CoordinateSystem, Box<dyn Error>> {
-        let file = File::open(path)?;
-        let buf_reader = BufReader::new(file);
-        let mut reader = Reader::from_reader(buf_reader);
-        reader.trim_text(true);
-
-        let mut buf = Vec::new();
-        let mut srid = None;
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(ref e)) => {
-                    match e.name().as_ref() {
-                        b"gml:srsName" | b"srsName" => {
-                            if let Ok(Event::Text(text)) = reader.read_event_into(&mut buf) {
-                                let srs_text = text.unescape().unwrap_or_default();
-                                if let Some(epsg_code) = extract_epsg_code(&srs_text) {
-                                    srid = Some(epsg_code);
-                                    break;
-                                }
-                            }
-                        },
-                        _ => ()
-                    }
-                },
-                Ok(Event::Eof) => break,
-                Err(e) => return Err(Box::new(e)),
-                _ => ()
-            }
-            buf.clear();
-        }
-
-        match srid {
-            Some(code) => Ok(CoordinateSystem {
-                srid: code,
-                source: path.display().to_string(),
-            }),
-            None => Err("No CRS information found in GML file".into())
-        }
-    }
-}
-
-fn extract_epsg_code(srs: &str) -> Option<String> {
-    if srs.contains("EPSG") {
-        // Handle URN format
-        if let Some(code) = srs.split(':').last() {
-            return Some(format!("EPSG:{}", code));
-        }
-        // Handle URL format
-        if let Some(code) = srs.split('#').last() {
-            return Some(format!("EPSG:{}", code));
-        }
-    }
-    None
-}
-
-// Add this function near other public functions
-pub fn validate_crs(files: &[PathBuf]) -> Result<Option<CoordinateSystem>, Box<dyn Error>> {
-    let mut detected_crs: Option<CoordinateSystem> = None;
-
-    for file in files {
-        let crs = match file.extension().and_then(|ext| ext.to_str()) {
-            Some("gml") | Some("xml") => {
-                let reader = GmlReader::new();
-                Some(reader.detect_crs(file)?)
-            },
-            Some("geojson") | Some("json") => {
-                // GeoJSON files are assumed to be WGS84 unless specified otherwise
-                Some(CoordinateSystem {
-                    srid: "EPSG:4326".to_string(),
-                    source: file.display().to_string(),
-                })
-            },
-            _ => None
-        };
-
-        if let Some(file_crs) = crs {
-            match &detected_crs {
-                None => detected_crs = Some(file_crs),
-                Some(existing_crs) => {
-                    if existing_crs.srid != file_crs.srid {
-                        return Err(format!(
-                            "CRS mismatch: {} uses {}, but {} uses {}",
-                            existing_crs.source, existing_crs.srid,
-                            file_crs.source, file_crs.srid
-                        ).into());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(detected_crs)
-}
-
+// Function to load geometries from a GeoJSON file
 pub fn load_geometries(file_path: &PathBuf) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
     println!("Loading file: {}", file_path.display());
-    
-    match file_path.extension().and_then(|ext| ext.to_str()) {
-        Some("geojson") | Some("json") => load_geojson(file_path),
-        Some("gml") | Some("xml") => {
-            let mut reader = GmlReader::new();
-            reader.read_geometries(file_path)
-        },
-        _ => Err("Unsupported file format".into())
-    }
-}
-
-fn load_geojson(file_path: &PathBuf) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
 
@@ -757,12 +558,6 @@ fn write_partition_to_file(
 
 pub fn process_gis_files(files: Vec<PathBuf>, num_partitions: Option<usize>) -> Result<(), Box<dyn Error>> {
     println!("\n=== Starting GIS Processing ===");
-    
-    if let Some(crs) = validate_crs(&files)? {
-        println!("Detected Coordinate Reference System: {}", crs.srid);
-    } else {
-        println!("Warning: Could not detect CRS information. Assuming WGS84 (EPSG:4326)");
-    }
     
     // Create output directory
     let output_dir = Path::new("output");

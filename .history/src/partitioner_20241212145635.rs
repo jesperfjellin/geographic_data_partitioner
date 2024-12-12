@@ -156,59 +156,6 @@ impl GmlReader {
     }
 }
 
-fn extract_epsg_code(srs: &str) -> Option<String> {
-    if srs.contains("EPSG") {
-        // Handle URN format
-        if let Some(code) = srs.split(':').last() {
-            return Some(format!("EPSG:{}", code));
-        }
-        // Handle URL format
-        if let Some(code) = srs.split('#').last() {
-            return Some(format!("EPSG:{}", code));
-        }
-    }
-    None
-}
-
-// Add this function near other public functions
-pub fn validate_crs(files: &[PathBuf]) -> Result<Option<CoordinateSystem>, Box<dyn Error>> {
-    let mut detected_crs: Option<CoordinateSystem> = None;
-
-    for file in files {
-        let crs = match file.extension().and_then(|ext| ext.to_str()) {
-            Some("gml") | Some("xml") => {
-                let reader = GmlReader::new();
-                Some(reader.detect_crs(file)?)
-            },
-            Some("geojson") | Some("json") => {
-                // GeoJSON files are assumed to be WGS84 unless specified otherwise
-                Some(CoordinateSystem {
-                    srid: "EPSG:4326".to_string(),
-                    source: file.display().to_string(),
-                })
-            },
-            _ => None
-        };
-
-        if let Some(file_crs) = crs {
-            match &detected_crs {
-                None => detected_crs = Some(file_crs),
-                Some(existing_crs) => {
-                    if existing_crs.srid != file_crs.srid {
-                        return Err(format!(
-                            "CRS mismatch: {} uses {}, but {} uses {}",
-                            existing_crs.source, existing_crs.srid,
-                            file_crs.source, file_crs.srid
-                        ).into());
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(detected_crs)
-}
-
 pub fn load_geometries(file_path: &PathBuf) -> Result<Vec<Geometry<f64>>, Box<dyn Error>> {
     println!("Loading file: {}", file_path.display());
     

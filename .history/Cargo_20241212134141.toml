@@ -10,5 +10,7 @@ geojson = "0.24"
 rstar = "0.11"
 clap = { version = "4.4", features = ["derive"] }
 serde_json = "1.0"
-quick-xml = "0.31"
-proj = "0.27"
+gdal = "0.16"  # For CRS transformations and GML support
+roxmltree = "0.18"  # For XML/GML parsing
+quick-xml = "0.31"  # Alternative XML parser, more performant
+proj = "0.27"  # For direct proj transformations if needed
