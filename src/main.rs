@@ -1,6 +1,6 @@
 use clap::{Command, Arg};
 use std::path::PathBuf;
-mod partitioner;
+use gis_partitioner::process_files;  // Update this import
 
 fn main() {
     let matches = Command::new("GIS Partitioner")
@@ -25,7 +25,7 @@ fn main() {
         .arg(
             Arg::new("distinct")
                 .long("distinct")
-                .action(clap::ArgAction::SetTrue)  // Add this line
+                .action(clap::ArgAction::SetTrue)
                 .help("Process files separately but with the same partition lines"),
         )
         .get_matches();
@@ -53,12 +53,8 @@ fn main() {
         }
     }
 
-    // Process the files
-    let result = if distinct {
-        partitioner::process_distinct_files(files, num_partitions)
-    } else {
-        partitioner::process_gis_files(files, num_partitions)
-    };
+    // Process the files using the new combined function
+    let result = process_files(files, num_partitions, distinct);
 
     match result {
         Ok(_) => println!("Processing completed successfully"),
